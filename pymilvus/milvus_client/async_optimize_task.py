@@ -84,12 +84,13 @@ class AsyncOptimizeTask:
             raise MilvusException(message="Optimization task was cancelled")
 
     async def result(self, timeout: Optional[float] = None) -> OptimizeResult:
+        """Wait for the result without cancelling optimization when the wait times out."""
         if not self._task:
             raise MilvusException(message="Task has not been started")
 
         try:
             if timeout is not None:
-                return await asyncio.wait_for(self._task, timeout=timeout)
+                return await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
             return await self._task
         except asyncio.TimeoutError as e:
             raise MilvusException(message="Timeout waiting for optimization to complete") from e
