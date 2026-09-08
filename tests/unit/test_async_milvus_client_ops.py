@@ -446,6 +446,59 @@ class TestAsyncClientQueryBranches:
 
 class TestAsyncClientOptimize:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeout", [0, 0.001])
+    async def test_wait_true_timeout_cleans_up_owned_task(self, timeout):
+        client, _ = _make_client()
+        tasks = []
+        start = AsyncOptimizeTask.start
+
+        def record_start(task):
+            tasks.append(task)
+            start(task)
+
+        async def execute(**kwargs):
+            await asyncio.Event().wait()
+
+        with patch.object(AsyncOptimizeTask, "start", record_start), patch.object(
+            client, "_execute_optimize", execute
+        ):
+            try:
+                with pytest.raises(MilvusException, match="Timeout waiting"):
+                    await client.optimize("col", wait=True, timeout=timeout)
+                assert len(tasks) == 1
+                assert tasks[0].done()
+                assert tasks[0].cancelled()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                    await asyncio.gather(task._task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeout", [None, 10])
+    async def test_wait_true_caller_cancellation_cleans_up_owned_task(self, timeout):
+        client, _ = _make_client()
+        started = asyncio.Event()
+        tasks = []
+
+        async def execute(task, **kwargs):
+            tasks.append(task)
+            started.set()
+            await asyncio.Event().wait()
+
+        with patch.object(client, "_execute_optimize", execute):
+            waiter = asyncio.create_task(client.optimize("col", wait=True, timeout=timeout))
+            await started.wait()
+            try:
+                waiter.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiter
+                assert tasks[0].done()
+                assert tasks[0].cancelled()
+            finally:
+                tasks[0].cancel()
+                await asyncio.gather(waiter, tasks[0]._task, return_exceptions=True)
+
+    @pytest.mark.asyncio
     async def test_wait_timeout_preserves_optimization_and_other_waiter(self):
         client, handler = _make_client()
         compacting = asyncio.Event()

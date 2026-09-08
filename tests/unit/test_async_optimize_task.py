@@ -64,6 +64,90 @@ class TestAsyncOptimizeTaskCheckCancelled:
 
 class TestAsyncOptimizeTaskResult:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeout", [None, 10])
+    async def test_cancelled_result_waiter_preserves_background_task(self, timeout):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        expected = MagicMock(collection_name="col")
+
+        async def execute(**kwargs):
+            started.set()
+            await finish.wait()
+            return expected
+
+        task = _make_task(execute)
+        task.start()
+        await started.wait()
+        waiter = asyncio.create_task(task.result(timeout=timeout))
+        other_waiter = asyncio.create_task(task.result())
+        await asyncio.sleep(0)
+        try:
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            assert not task.done()
+            assert not task.cancelled()
+            assert not other_waiter.done()
+            finish.set()
+            assert await other_waiter is expected
+        finally:
+            finish.set()
+            await asyncio.gather(task._task, waiter, other_waiter, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeout", [None, 10])
+    async def test_external_wait_for_preserves_background_task(self, timeout):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        expected = MagicMock(collection_name="col")
+
+        async def execute(**kwargs):
+            started.set()
+            await finish.wait()
+            return expected
+
+        task = _make_task(execute)
+        task.start()
+        await started.wait()
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(task.result(timeout=timeout), timeout=0.001)
+            assert not task.done()
+            assert not task.cancelled()
+            finish.set()
+            assert await task.result() is expected
+        finally:
+            finish.set()
+            await asyncio.gather(task._task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not hasattr(asyncio, "timeout"), reason="Requires Python 3.11+")
+    async def test_external_timeout_context_preserves_background_task(self):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        expected = MagicMock(collection_name="col")
+
+        async def execute(**kwargs):
+            started.set()
+            await finish.wait()
+            return expected
+
+        task = _make_task(execute)
+        task.start()
+        await started.wait()
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                async with asyncio.timeout(0.001):
+                    await task.result()
+            assert not task.done()
+            assert not task.cancelled()
+            finish.set()
+            assert await task.result() is expected
+        finally:
+            finish.set()
+            await asyncio.gather(task._task, return_exceptions=True)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("timeout", [0, 0.001])
     @pytest.mark.parametrize("fails", [False, True])
     async def test_wait_timeout_preserves_background_result(self, timeout, fails):
